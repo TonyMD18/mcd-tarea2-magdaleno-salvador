@@ -51,6 +51,12 @@ class ChatSession(Observable):
     def all(self) -> list[Message]:
         """Return a shallow copy of the message list."""
         return list(self._messages)
+    def last_assistant_text(self) -> str:
+        """Return the content of the most recent assistant message."""
+        for message in reversed(self._messages):
+            if message.role == Role.ASSISTANT:
+                return message.content
+        return ""
 
     def as_public(self) -> list[dict[str, Any]]:
         """Return a JSON-serializable representation of the chat history."""

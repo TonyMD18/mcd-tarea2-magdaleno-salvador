@@ -1,17 +1,17 @@
 from __future__ import annotations
+
 from dataclasses import replace
 from typing import Any, List, Tuple
 
 import ipywidgets as widgets
 from IPython.display import HTML, clear_output, display
 
-from minichat.core.observer import Observer
-from minichat.core.events import Event
 from minichat.controller.chat_controller import ChatController
+from minichat.core.events import Event
+from minichat.core.observer import Observer
 from minichat.model.chat_session import ChatSession
 from minichat.model.role import Role
 from minichat.ui.history_html import HistoryHTML
-
 
 
 class WidgetsView(Observer):
@@ -27,6 +27,15 @@ class WidgetsView(Observer):
         self._session = session
         self._ctl = controller
         self._fmt = HistoryHTML()
+
+        self._handlers = {
+            Event.GENERATING_START: self._on_generating_start,
+            Event.GENERATING_DONE: self._on_generating_done,
+            Event.GENERATING_ERROR: self._on_generating_error,
+            Event.EXPORT_DONE: self._on_export_done,
+            Event.MESSAGES_UPDATED: self._on_messages_updated,
+            Event.CONFIG_CHANGED: self._on_config_changed,
+        }
 
         self._build_header()
         self._build_output()
@@ -70,33 +79,63 @@ class WidgetsView(Observer):
             layout=widgets.Layout(width="100%", min_height="60px"),
         )
         self.btn_send = widgets.Button(
-            description="Add / Send", button_style="primary"
+            description="Add / Send",
+            button_style="primary",
         )
         self.btn_export = widgets.Button(description="Export JSON")
 
     def _build_params(self) -> None:
         self.temp = widgets.FloatSlider(
-            description="temperature", min=0.1, max=1.5, step=0.05, value=0.7
+            description="temperature",
+            min=0.1,
+            max=1.5,
+            step=0.05,
+            value=0.7,
         )
         self.topp = widgets.FloatSlider(
-            description="top_p", min=0.1, max=1.0, step=0.01, value=0.95
+            description="top_p",
+            min=0.1,
+            max=1.0,
+            step=0.01,
+            value=0.95,
         )
         self.topk = widgets.IntSlider(
-            description="top_k", min=0, max=100, step=1, value=50
+            description="top_k",
+            min=0,
+            max=100,
+            step=1,
+            value=50,
         )
         self.maxnt = widgets.IntSlider(
-            description="max_new_tokens", min=16, max=256, step=8, value=120
+            description="max_new_tokens",
+            min=16,
+            max=256,
+            step=8,
+            value=120,
         )
         self.params = widgets.Accordion(
-            children=[widgets.VBox([self.temp, self.topp, self.topk, self.maxnt])]
+            children=[
+                widgets.VBox(
+                    [
+                        self.temp,
+                        self.topp,
+                        self.topk,
+                        self.maxnt,
+                    ]
+                )
+            ]
         )
         self.params.set_title(0, "Generation parameters (role = user)")
 
     def _build_manage(self) -> None:
-        self.sel_index = widgets.Dropdown(options=[], description="Message:")
+        self.sel_index = widgets.Dropdown(
+            options=[],
+            description="Message:",
+        )
         self.btn_delete = widgets.Button(description="Delete selected")
         self.btn_clear_all = widgets.Button(
-            description="Delete ALL", button_style="danger"
+            description="Delete ALL",
+            button_style="danger",
         )
         self.status = widgets.HTML("")
 
@@ -109,12 +148,21 @@ class WidgetsView(Observer):
                     [
                         widgets.HBox([self.role]),
                         self.text,
-                        widgets.HBox([self.btn_send, self.btn_export]),
+                        widgets.HBox(
+                            [
+                                self.btn_send,
+                                self.btn_export,
+                            ]
+                        ),
                         self.params,
                         widgets.HTML("<hr>"),
                         widgets.HTML("<b>Manage messages</b>"),
                         widgets.HBox(
-                            [self.sel_index, self.btn_delete, self.btn_clear_all]
+                            [
+                                self.sel_index,
+                                self.btn_delete,
+                                self.btn_clear_all,
+                            ]
                         ),
                         self.status,
                     ]
@@ -147,8 +195,10 @@ class WidgetsView(Observer):
             )
             self._ctl.set_generation(cfg)
             self._ctl.send_user(text)
+
         elif self.role.value == Role.ASSISTANT.value:
             self._ctl.add_assistant(text)
+
         else:
             self._ctl.add_system(text)
 
@@ -162,23 +212,31 @@ class WidgetsView(Observer):
     # ---------- Observer ----------
 
     def on_event(self, event: str, payload: dict) -> None:
-        """React to controller/session events."""
-        if event == Event.GENERATING_START:
-            self._set_status("Generating…")
-        elif event == Event.GENERATING_DONE:
-            self._set_status("Done.")
-        elif event == Event.GENERATING_ERROR:
-            self._set_status(f"Error: {payload.get('error', '')}")
-        elif event == Event.EXPORT_DONE:
-            self._set_status(f"Exported: {payload.get('path', '')}")
-        elif event in {Event.MESSAGES_UPDATED, Event.CONFIG_CHANGED}:
-            # Re-render after any session/config changes.
-            self._render()
-            # Set a neutral status (avoid showing export text by mistake).
-            if event == Event.MESSAGES_UPDATED:
-                self._set_status("Messages updated.")
-            else:
-                self._set_status("Config updated.")
+        """Dispatch an event to its corresponding handler."""
+        handler = self._handlers.get(event)
+        if handler is not None:
+            handler(payload)
+
+    def _on_generating_start(self, payload: dict) -> None:
+        self._set_status("Generating…")
+
+    def _on_generating_done(self, payload: dict) -> None:
+        self._set_status("Done.")
+
+    def _on_generating_error(self, payload: dict) -> None:
+        self._set_status(f"Error: {payload.get('error', '')}")
+
+    def _on_export_done(self, payload: dict) -> None:
+        self._set_status(f"Exported: {payload.get('path', '')}")
+
+    def _on_messages_updated(self, payload: dict) -> None:
+        self._render()
+        self._set_status("Messages updated.")
+
+    def _on_config_changed(self, payload: dict) -> None:
+        self._render()
+        self._set_status("Config updated.")
+
     # ---------- Rendering ----------
 
     def _render(self) -> None:
@@ -193,12 +251,15 @@ class WidgetsView(Observer):
             (f"{i}: {m.summary()}", i)
             for i, m in enumerate(self._session.all())
         ]
-        
+
         self.sel_index.options = opts
+
         if opts:
             current = self.sel_index.value
             valid_values = [v for _, v in opts]
-            self.sel_index.value = current if current in valid_values else opts[-1][1]
+            self.sel_index.value = (
+                current if current in valid_values else opts[-1][1]
+            )
         else:
             self.sel_index.value = None
 
@@ -206,3 +267,5 @@ class WidgetsView(Observer):
         self.status.value = (
             f"<div style='color:#555;font-size:12px'>{text}</div>"
         )
+
+        

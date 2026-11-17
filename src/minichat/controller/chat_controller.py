@@ -7,26 +7,18 @@ from dataclasses import asdict
 from typing import Any, Optional
 
 from minichat.core.backend import Backend
+from minichat.core.events import Event
 from minichat.core.observable import Observable
 from minichat.model.chat_session import ChatSession
 from minichat.model.generation_config import GenerationConfig
 from minichat.model.role import Role
-from minichat.core.events import Event
+
+
 logger = logging.getLogger(__name__)
 
 
 class ChatController(Observable):
-    """Coordinates the conversation between session and backend.
-
-    Emits the following observable events:
-        - "config_changed": after updating GenerationConfig
-        - "generating_start": before calling the backend
-        - "generating_done": after a reply (payload: {"reply": str})
-        - "generating_error": on backend exception
-          (payload: {"error": str})
-        - "messages_updated": after session mutations
-        - "export_done": after exporting JSON (payload: {"path": str})
-    """
+    """Coordinates the conversation between session and backend."""
 
     def __init__(
         self,
@@ -35,11 +27,7 @@ class ChatController(Observable):
         *,
         logger_: Optional[logging.Logger] = None,
     ) -> None:
-        """Initialize with dependencies and default config.
-
-        Note:
-            Dependencies are injected to ease testing with fakes/mocks.
-        """
+        """Initialize with dependencies and default config."""
         super().__init__()
         self._session = session
         self._backend = backend
@@ -67,54 +55,27 @@ class ChatController(Observable):
         self._notify(Event.CONFIG_CHANGED, {"cfg": asdict(self._cfg)})
 
     def send_user(self, text: str) -> None:
-        """Append a user message, ask the backend for a reply and store it.
-
-        Emits:
-            generating_start -> generating_done | generating_error
-            messages_updated on session mutations.
-
-        Raises:
-            ValueError: If text is empty or whitespace.
-        """
-        # 1. Validate input
-        if text is None:
-            text = ""
-        text = text.strip()
-        if len(text) == 0:
+        """Append a user message, generate a reply, and store it."""
+        text = self._validate_text(text)
+        if not text:
             raise ValueError("text cannot be empty")
-        if len(text) > 2000:
-            text = text[:2000]
 
-        # 2. Store the user turn
         self._session.add(Role.USER, text)
         self._notify(Event.GENERATING_START, {})
 
-        # 3. Call the backend and measure latency
-        started = time.perf_counter()
         try:
-            reply = self._backend.reply(self._session, self._cfg)
+            reply, elapsed_ms = self._generate_reply()
         except Exception as exc:
             self._log.exception("Backend error during reply")
             self._notify(Event.GENERATING_ERROR, {"error": str(exc)})
             return
-        elapsed_ms = int((time.perf_counter() - started) * 1000)
 
-        # 4. Build metadata for the assistant turn
-        meta: dict[str, Any] = {
-            "backend": self._backend.name,
-            "gen_cfg": asdict(self._cfg),
-            "latency_ms": elapsed_ms,
-            "prompt_chars": len(text),
-            "reply_chars": len(reply),
-        }
-        self._log.debug("reply generated in %d ms", elapsed_ms)
-
-        # 5. Store the assistant turn
+        meta = self._build_meta(text, reply, elapsed_ms)
         self._session.add(Role.ASSISTANT, reply, meta=meta)
         self._notify(Event.GENERATING_DONE, {"reply": reply})
 
     def add_assistant(self, text: str) -> None:
-        """Manually append an assistant message (no generation)."""
+        """Manually append an assistant message."""
         text = self._validate_text(text)
         if not text:
             return
@@ -139,10 +100,6 @@ class ChatController(Observable):
         self._session.clear()
         self._notify(Event.MESSAGES_UPDATED, {})
 
-
-
-
-
     def export_json(self, path: str = "chat_transcript.json") -> None:
         """Export the conversation transcript as JSON."""
         data = self._session.as_public()
@@ -151,5 +108,28 @@ class ChatController(Observable):
         self._notify(Event.EXPORT_DONE, {"path": path})
 
     def _validate_text(self, text: Optional[str]) -> str:
-        """Return the stripped text, or '' when it is None/blank."""
-        return (text or "").strip()
+        """Normalize text and truncate it to 2000 characters."""
+        return (text or "").strip()[:2000]
+
+    def _generate_reply(self) -> tuple[str, int]:
+        """Generate a backend reply and return it with latency in ms."""
+        started = time.perf_counter()
+        reply = self._backend.reply(self._session, self._cfg)
+        elapsed_ms = int((time.perf_counter() - started) * 1000)
+        self._log.debug("reply generated in %d ms", elapsed_ms)
+        return reply, elapsed_ms
+
+    def _build_meta(
+        self,
+        text: str,
+        reply: str,
+        elapsed_ms: int,
+    ) -> dict[str, Any]:
+        """Build metadata for an assistant reply."""
+        return {
+            "backend": self._backend.name,
+            "gen_cfg": asdict(self._cfg),
+            "latency_ms": elapsed_ms,
+            "prompt_chars": len(text),
+            "reply_chars": len(reply),
+        }
